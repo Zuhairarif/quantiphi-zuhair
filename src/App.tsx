@@ -121,6 +121,10 @@ const createLocalThread = (): Thread => ({
   updatedAt: 'New',
 });
 
+type ChatFunctionResponse = {
+  reply?: unknown;
+};
+
 const replyFor = (prompt: string, tone: Tone): string => {
   const normalizedPrompt = prompt.toLowerCase();
   const opening = tone === 'casual'
@@ -138,6 +142,18 @@ const replyFor = (prompt: string, tone: Tone): string => {
   }
 
   return `${opening}\n\nLet’s turn the thought into something actionable:\n\n**1. Define the outcome**\nWhat should be different when this is done?\n\n**2. Choose the smallest useful first step**\nMake it easy to start and easy to evaluate.\n\n**3. Create a simple rhythm**\nA short sequence of focused actions will keep the idea moving.\n\n**4. Leave room to learn**\nUse the first pass to gather signal, then improve from there.\n\nTell me a little more about the context and I’ll help you build the next version.`;
+};
+
+const requestAssistantReply = async (message: string, tone: Tone): Promise<string> => {
+  try {
+    const { data, error } = await supabase.functions.invoke('chat', { body: { message, tone } });
+    const response = data as ChatFunctionResponse | null;
+    if (!error && response && typeof response.reply === 'string' && response.reply.trim()) return response.reply.trim();
+  } catch {
+    // The local response keeps the workspace usable if the server is temporarily unavailable.
+  }
+
+  return replyFor(message, tone);
 };
 
 function App() {
@@ -317,7 +333,6 @@ function App() {
       content: prompt,
       createdAt: formatTime(new Date()),
     };
-    const response = replyFor(prompt, tone);
     const assistantMessage: Message = {
       id: `assistant-${Date.now()}`,
       role: 'assistant',
@@ -328,7 +343,7 @@ function App() {
     setComposerValue('');
     setMessagesByThread((current) => ({
       ...current,
-      [persistedThreadId]: [...(current[persistedThreadId] ?? []), userMessage, assistantMessage],
+      [persistedThreadId]: [...(current[persistedThreadId] ?? []), userMessage],
     }));
     updateThread(persistedThreadId, { preview: prompt, title: currentThread.title === 'New conversation' ? prompt.slice(0, 34) : currentThread.title, updatedAt: 'Today', tone });
     setIsStreaming(true);
@@ -342,6 +357,12 @@ function App() {
     if (userSaveError) {
       setErrorMessage('Your message is showing here, but could not be saved.');
     }
+
+    const response = await requestAssistantReply(prompt, tone);
+    setMessagesByThread((current) => ({
+      ...current,
+      [persistedThreadId]: [...(current[persistedThreadId] ?? []), assistantMessage],
+    }));
 
     for (let index = 0; index < response.length; index += 1) {
       await new Promise<void>((resolve) => window.setTimeout(resolve, 14));
