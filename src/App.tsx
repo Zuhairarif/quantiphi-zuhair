@@ -1,10 +1,11 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive,
   ArrowUpRight,
   Bookmark,
   Check,
   ChevronDown,
+  Copy,
   Command,
   FileText,
   Headphones,
@@ -18,6 +19,7 @@ import {
   Send,
   Settings2,
   Sparkles,
+  Trash2,
   WandSparkles,
   X,
   Zap,
@@ -150,7 +152,11 @@ function App() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [toastMessage, setToastMessage] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
 
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? demoThread;
   const activeMessages = useMemo(() => messagesByThread[activeThreadId] ?? [], [activeThreadId, messagesByThread]);
@@ -234,14 +240,33 @@ function App() {
     }
   };
 
-  const startNewConversation = (): void => {
+  const startNewConversation = useCallback((): void => {
     const newThread = createLocalThread();
     setThreads((current) => [newThread, ...current]);
     setActiveThreadId(newThread.id);
     setTone('professional');
+    setComposerValue('');
     setErrorMessage('');
     setIsSidebarOpen(false);
-  };
+    composerRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const handleKeyboardShortcut = (event: KeyboardEvent): void => {
+      const target = event.target as HTMLElement;
+      const isTyping = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA';
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        startNewConversation();
+      } else if (event.key === '/' && !isTyping) {
+        event.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyboardShortcut);
+    return () => window.removeEventListener('keydown', handleKeyboardShortcut);
+  }, [startNewConversation]);
 
   const updateThread = (threadId: string, updates: Partial<Thread>): void => {
     setThreads((current) => current.map((thread) => thread.id === threadId ? { ...thread, ...updates } : thread));
@@ -340,8 +365,11 @@ function App() {
 
   const handleDeleteThread = async (): Promise<void> => {
     if (activeThread.id.startsWith('local-') || activeThread.id === 'demo-aria') {
-      setThreads((current) => current.filter((thread) => thread.id !== activeThread.id));
-      startNewConversation();
+      const newThread = createLocalThread();
+      setThreads((current) => [newThread, ...current.filter((thread) => thread.id !== activeThread.id)]);
+      setActiveThreadId(newThread.id);
+      setTone('professional');
+      setComposerValue('');
       return;
     }
 
@@ -352,6 +380,27 @@ function App() {
       await selectThread(remainingThreads[0]);
     } else {
       startNewConversation();
+    }
+  };
+
+  const showToast = (message: string): void => {
+    setToastMessage(message);
+    window.setTimeout(() => setToastMessage(''), 2400);
+  };
+
+  const handleCopyMessage = async (message: Message): Promise<void> => {
+    if (!navigator.clipboard) {
+      setErrorMessage('Copy is not available in this browser.');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopiedMessageId(message.id);
+      showToast('Response copied to your clipboard');
+      window.setTimeout(() => setCopiedMessageId(null), 1800);
+    } catch {
+      setErrorMessage('The response could not be copied.');
     }
   };
 
@@ -383,7 +432,7 @@ function App() {
 
         <div className="sidebar-search">
           <Search size={16} />
-          <input value={searchValue} onChange={(event) => setSearchValue(event.target.value)} placeholder="Search conversations" aria-label="Search conversations" />
+          <input ref={searchRef} value={searchValue} onChange={(event) => setSearchValue(event.target.value)} placeholder="Search conversations" aria-label="Search conversations" />
           <span className="search-shortcut">/</span>
         </div>
 
@@ -439,7 +488,7 @@ function App() {
             </div>
             <div className="conversation-actions">
               <button className="subtle-button"><Bookmark size={15} /> Save</button>
-              <button className="subtle-button danger-button" onClick={() => void handleDeleteThread()}><Archive size={15} /> Archive</button>
+              <button className="subtle-button danger-button" onClick={() => void handleDeleteThread()}><Trash2 size={15} /> Delete</button>
             </div>
           </div>
 
@@ -451,7 +500,7 @@ function App() {
                 <h2>What would you like to<br />think through?</h2>
                 <p>Bring a question, a half-formed idea, or a blank page. We’ll find the next step together.</p>
                 <div className="starter-grid">
-                  {promptStarters.map(({ icon: Icon, label, prompt }) => <button key={label} className="starter-card" onClick={() => { setComposerValue(prompt); }}><Icon size={18} /><span>{label}</span><ArrowUpRight size={14} /></button>)}
+                  {promptStarters.map(({ icon: Icon, label, prompt }) => <button key={label} className="starter-card" onClick={() => { setComposerValue(prompt); composerRef.current?.focus(); }}><Icon size={18} /><span>{label}</span><ArrowUpRight size={14} /></button>)}
                 </div>
               </div>
             ) : (
@@ -461,7 +510,7 @@ function App() {
                   <div className="message-body">
                     <div className="message-meta"><strong>{message.role === 'assistant' ? 'Aria' : 'You'}</strong><span>{message.createdAt}</span>{message.role === 'assistant' && <span className="response-label">Response</span>}</div>
                     <div className="message-content">{renderMessageContent(message.content)}{message.role === 'assistant' && isStreaming && message.id === activeMessages[activeMessages.length - 1]?.id && <span className="typing-cursor" />}</div>
-                    {message.role === 'assistant' && message.content && !isStreaming && <div className="message-tools"><button><Check size={13} /> Helpful</button><button><Bookmark size={13} /> Save response</button></div>}
+                    {message.role === 'assistant' && message.content && !isStreaming && <div className="message-tools"><button onClick={() => showToast('Thanks for the feedback')}><Check size={13} /> Helpful</button><button onClick={() => void handleCopyMessage(message)}><Copy size={13} /> {copiedMessageId === message.id ? 'Copied' : 'Copy response'}</button></div>}
                   </div>
                 </article>)}
               </div>
@@ -472,7 +521,7 @@ function App() {
             {errorMessage && <div className="inline-error">{errorMessage}</div>}
             <div className="composer-shell">
               <form className="composer-form" onSubmit={(event) => void handleSubmit(event)}>
-                <textarea value={composerValue} onChange={(event) => setComposerValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void handleSubmit(); } }} placeholder="Ask Aria anything…" rows={1} aria-label="Message Aria" />
+                <textarea ref={composerRef} value={composerValue} onChange={(event) => setComposerValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void handleSubmit(); } }} placeholder="Ask Aria anything…" rows={1} aria-label="Message Aria" />
                 <div className="composer-footer">
                   <div className="composer-tools"><button type="button" aria-label="Attach a file"><Paperclip size={17} /></button><button type="button" aria-label="Voice input"><Headphones size={17} /></button><span className="composer-hint">Shift + Enter for a new line</span></div>
                   <div className="composer-send-wrap"><span className="composer-model"><span className="model-dot" /> Aria 1.0 <ChevronDown size={14} /></span><button className="send-button" type="submit" disabled={!composerValue.trim() || isStreaming} aria-label="Send message"><Send size={16} /></button></div>
@@ -483,6 +532,7 @@ function App() {
           </div>
         </div>
       </main>
+      {toastMessage && <div className="toast-message" role="status"><Check size={15} /> {toastMessage}</div>}
     </div>
   );
 }
